@@ -8,12 +8,11 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/appleboy/gin-jwt/v2"
 	"github.com/didip/tollbooth"
 	"github.com/didip/tollbooth_gin"
 	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-contrib/gzip"
-	gsessions "github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 )
 
@@ -67,16 +66,17 @@ type TemplateData struct {
 const (
 	// The name supplied to the Gin session middleware can be any arbitrary string
 	HTTPSessionName    = "hanabi.sid"
-	HTTPSessionTimeout = 60 * 60 * 24 * 365 // 1 year in seconds
+	HTTPSessionTimeout = time.Hour * time.Duration(24*365) // 1 year
 	HTTPReadTimeout    = 5 * time.Second
 	HTTPWriteTimeout   = 10 * time.Second
 )
 
 var (
-	domain       string
-	useTLS       bool
-	GATrackingID string
-	webpackPort  int
+	domain        string
+	useTLS        bool
+	GATrackingID  string
+	webpackPort   int
+	jwtMiddleware *jwt.GinJWTMiddleware
 
 	// HTTPClientWithTimeout is used for sending web requests to external sites,
 	// which is used in various middleware
@@ -135,8 +135,7 @@ func httpInit() {
 
 	// Create a new Gin HTTP router
 	gin.SetMode(gin.ReleaseMode)                       // Comment this out to debug HTTP stuff
-	httpRouter := gin.Default()                        // Has the "Logger" and "Recovery" middleware attached
-	httpRouter.Use(gzip.Gzip(gzip.DefaultCompression)) // Add GZip compression middleware
+	httpRouterBase := gin.Default()                        // Has the "Logger" and "Recovery" middleware attached
 
 	// Attach rate-limiting middleware from Tollbooth
 	// The limiter works per path request,
@@ -148,53 +147,96 @@ func httpInit() {
 		limiter := tollbooth.NewLimiter(2, nil) // Limit each user to 2 requests per second
 		limiter.SetMessage(http.StatusText(http.StatusTooManyRequests))
 		limiterMiddleware := tollbooth_gin.LimitHandler(limiter)
-		httpRouter.Use(limiterMiddleware)
+		httpRouterBase.Use(limiterMiddleware)
 	}
 
-	// Create a session store
-	httpSessionStore := cookie.NewStore([]byte(sessionSecret))
-	options := gsessions.Options{
-		Path:   "/",                // The cookie should apply to the entire domain
-		MaxAge: HTTPSessionTimeout, // In seconds
-	}
+	// Set up JWT middleware
+	jwtMw, _ := jwt.New(&jwt.GinJWTMiddleware{
+		Realm:             "hanabi.live",
+		Key:               []byte(sessionSecret),
+		Timeout:           HTTPSessionTimeout,
+		MaxRefresh:        HTTPSessionTimeout,
+		IdentityKey:       "github.com/appleboy/gin-jwt/identity",
+		SendCookie:        true,
+		SendAuthorization: false,
+		CookieName:        HTTPSessionName,
+		TokenLookup:       "cookie:" + HTTPSessionName,
+		PayloadFunc: func(data interface{}) jwt.MapClaims {
+			claims := jwt.MapClaims{}
+			if id, ok := data.(int); ok {
+				claims["id"] = id
+			}
+			logger.Info("Got claims=", claims)
+			return claims
+		},
+		IdentityHandler: func(c *gin.Context) interface{} {
+			claims := jwt.ExtractClaims(c)
+			if id, ok := claims["id"]; ok {
+				return int(id.(float64))
+			}
+			return nil
+		},
+		Authenticator: func(c *gin.Context) (interface{}, error) {
+			httpLogin(c)
+			if id, ok := c.Get("HANABI_USER_ID"); ok {
+				logger.Info("Got HANABI_USER_ID=", id)
+				return id.(int), nil
+			}
+			return nil, nil
+		},
+		LoginResponse: func(c *gin.Context, _ int, _ string, _ time.Time) {
+			if _, ok := c.Get("HANABI_USER_ID"); ok {
+				c.Writer.WriteHeader(http.StatusNoContent)
+			}
+		},
+		LogoutResponse: func(_ *gin.Context, _ int) { /* nop */ },
+	})
+
 	if !isDev {
 		// Bind the cookie to this specific domain for security purposes
-		options.Domain = domain
+		jwtMw.CookieDomain = domain
 		// Only send the cookie over HTTPS:
 		// https://www.owasp.org/index.php/Testing_for_cookies_attributes_(OTG-SESS-002)
-		options.Secure = useTLS
+		jwtMw.SecureCookie = useTLS
 		// Mitigate XSS attacks:
 		// https://www.owasp.org/index.php/HttpOnly
-		options.HttpOnly = true
+		jwtMw.CookieHTTPOnly = true
 		// Mitigate CSRF attacks:
 		// https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies#SameSite_cookies
-		options.SameSite = http.SameSiteStrictMode
+		jwtMw.CookieSameSite = http.SameSiteStrictMode
 	}
-	httpSessionStore.Options(options)
 
-	// Attach the sessions middleware
-	httpRouter.Use(gsessions.Sessions(HTTPSessionName, httpSessionStore))
+	jwtMiddleware = jwtMw
+    gzMiddleware := gzip.Gzip(gzip.DefaultCompression)
 
 	// Initialize Google Analytics
 	if len(GATrackingID) > 0 {
-		httpRouter.Use(httpGoogleAnalytics) // Attach the Google Analytics middleware
+		httpRouterBase.Use(httpGoogleAnalytics) // Attach the Google Analytics middleware
 	}
 
 	// Attach the Sentry middleware
 	if usingSentry {
-		httpRouter.Use(sentrygin.New(sentrygin.Options{
+		httpRouterBase.Use(sentrygin.New(sentrygin.Options{
 			// https://github.com/getsentry/sentry-go/blob/master/gin/sentrygin.go
 			Repanic: true, // Recommended as per the documentation
 			Timeout: HTTPWriteTimeout,
 		}))
-		httpRouter.Use(sentryHTTPAttachMetadata)
+		httpRouterBase.Use(sentryHTTPAttachMetadata)
 	}
 
-	// Path handlers (for cookies and logging in)
-	httpRouter.POST("/login", httpLogin)
-	httpRouter.GET("/logout", httpLogout)
-	httpRouter.GET("/test-cookie", httpTestCookie)
-	httpRouter.GET("/ws", httpWS)
+	// Create router groups with JWT and GZip middleware
+	httpRouterJwt := httpRouterBase.Group("/")
+	httpRouterJwt.Use(jwtMw.MiddlewareFunc())
+	httpRouter := httpRouterBase.Group("/")
+	httpRouter.Use(gzMiddleware) // Add GZip compression middleware
+
+	// Path handlers (for login/logout)
+	httpRouter.POST("/login", jwtMw.LoginHandler)
+	httpRouter.GET("/logout", jwtMw.LogoutHandler, httpLogout)
+
+	// Path handlers (for websocket and auth test)
+	httpRouterJwt.GET("/ws", httpWS)
+	httpRouterJwt.GET("/test-cookie", httpTestCookie).Use(gzMiddleware)
 
 	// Path handlers (for the main website)
 	httpRouter.GET("/", httpMain)
@@ -332,7 +374,7 @@ func httpInit() {
 	logger.Info("Listening on port " + strconv.Itoa(port) + ".")
 	HTTPServerWithTimeout := &http.Server{
 		Addr:         "0.0.0.0:" + strconv.Itoa(port), // Listen on all IP addresses
-		Handler:      httpRouter,
+		Handler:      httpRouterBase,
 		ReadTimeout:  HTTPReadTimeout,
 		WriteTimeout: HTTPWriteTimeout,
 	}

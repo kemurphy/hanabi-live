@@ -5,16 +5,15 @@ go 1.14
 require (
 	github.com/Zamiell/go-logging v0.0.0-20200330042608-74a4ce81eb96
 	github.com/alexedwards/argon2id v0.0.0-20200802152012-2464efd3196b
+	github.com/appleboy/gin-jwt/v2 v2.6.4
 	github.com/bwmarrin/discordgo v0.22.0
 	github.com/didip/tollbooth v4.0.2+incompatible
 	github.com/didip/tollbooth_gin v0.0.0-20170928041415-5752492be505
 	github.com/getsentry/sentry-go v0.7.0
 	github.com/gin-contrib/gzip v0.0.2
-	github.com/gin-contrib/sessions v0.0.3
 	github.com/gin-gonic/gin v1.6.3
 	github.com/go-playground/validator/v10 v10.3.0 // indirect
 	github.com/golang/protobuf v1.4.2 // indirect
-	github.com/gorilla/sessions v1.2.0 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/jackc/pgproto3/v2 v2.0.4 // indirect
 	github.com/jackc/pgx/v4 v4.8.1

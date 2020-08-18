@@ -10,7 +10,6 @@ import (
 	"unicode"
 
 	"github.com/alexedwards/argon2id"
-	gsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
 
@@ -206,23 +205,13 @@ func httpLogin(c *gin.Context) {
 		}
 	}
 
-	// Save the information to the session cookie
-	session := gsessions.Default(c)
-	session.Set("userID", user.ID)
-	if err := session.Save(); err != nil {
-		logger.Error("Failed to write to the login cookie for user \""+user.Username+"\":", err)
-		http.Error(
-			w,
-			http.StatusText(http.StatusInternalServerError),
-			http.StatusInternalServerError,
-		)
-		return
-	}
+	// Save the information to the context
+	c.Set("HANABI_USER_ID", int(user.ID))
 
 	// Log the login request and give a "200 OK" HTTP code
 	// (returning a code is not actually necessary but Firefox will complain otherwise)
 	logger.Info("User \""+user.Username+"\" logged in from:", data.IP)
-	http.Error(w, http.StatusText(http.StatusOK), http.StatusOK)
+	//http.Error(w, http.StatusText(http.StatusOK), http.StatusOK)
 
 	// Next, the client will attempt to establish a WebSocket connection,
 	// which is handled in "httpWS.go"

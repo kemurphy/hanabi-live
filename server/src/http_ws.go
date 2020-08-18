@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	gsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v4"
 )
@@ -61,7 +60,7 @@ func httpWS(c *gin.Context) {
 				"Please contact an administrator if you think this is a mistake.",
 			http.StatusUnauthorized,
 		)
-		deleteCookie(c)
+		jwtMiddleware.LogoutHandler(c)
 		return
 	}
 
@@ -76,9 +75,8 @@ func httpWS(c *gin.Context) {
 	}
 
 	// If they have a valid cookie, it should have the "userID" value that we set in "httpLogin()"
-	session := gsessions.Default(c)
 	var userID int
-	if v := session.Get("userID"); v == nil {
+    if v, ok := c.Get(jwtMiddleware.IdentityKey); !ok {
 		msg := "Unauthorized WebSocket handshake detected from \"" + ip + "\". " +
 			"This likely means that their cookie has expired."
 		httpWSDeny(c, msg)
@@ -162,7 +160,7 @@ func httpWS(c *gin.Context) {
 			http.StatusText(http.StatusBadRequest),
 			http.StatusBadRequest,
 		)
-		deleteCookie(c)
+		jwtMiddleware.LogoutHandler(c)
 		return
 	}
 }
@@ -177,7 +175,7 @@ func httpWSError(c *gin.Context, msg string, err error) {
 		http.StatusText(http.StatusInternalServerError),
 		http.StatusInternalServerError,
 	)
-	deleteCookie(c)
+	jwtMiddleware.LogoutHandler(c)
 }
 
 func httpWSDeny(c *gin.Context, msg string) {
@@ -190,7 +188,7 @@ func httpWSDeny(c *gin.Context, msg string) {
 		http.StatusText(http.StatusUnauthorized),
 		http.StatusUnauthorized,
 	)
-	deleteCookie(c)
+	jwtMiddleware.LogoutHandler(c)
 }
 
 func defaultSessionKeys() map[string]interface{} {
