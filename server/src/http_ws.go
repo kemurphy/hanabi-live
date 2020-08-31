@@ -3,6 +3,8 @@ package main
 import (
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -17,6 +19,30 @@ var (
 	sessionIDCounter uint64 = 0
 )
 
+func httpWS(c *gin.Context) {
+    remote, err := url.Parse("http://localhost:9991")
+	if err != nil {
+		panic(err)
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(remote)
+	//Define the director func
+	//This is a good place to log, for example
+	proxy.Director = func(req *http.Request) {
+		req.Header = c.Request.Header
+        for k, v := range(c.Request.Header) {
+            req.Header[k] = v
+        }
+        req.Header.Add("X-Session-Secret", string(jwtMiddleware.Key))
+		req.Host = remote.Host
+		req.URL.Scheme = remote.Scheme
+		req.URL.Host = remote.Host
+		req.URL.Path = "/"
+	}
+
+	proxy.ServeHTTP(c.Writer, c.Request)
+}
+
 // httpWS handles part 2 of 2 for logic authentication
 // Part 1 is found in "httpLogin.go"
 // After receiving a cookie in part 1, the client will attempt to open a WebSocket connection with
@@ -29,7 +55,7 @@ var (
 // and then the user's website data will be initialized in "websocketConnect.go"
 // If anything fails in this function, we want to delete the user's cookie in order to force them to
 // start authentication from the beginning
-func httpWS(c *gin.Context) {
+func httpWS_go(c *gin.Context) {
 	// Local variables
 	r := c.Request
 	w := c.Writer
